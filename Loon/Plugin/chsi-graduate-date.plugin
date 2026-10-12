@@ -1,5 +1,5 @@
 #!name = 学信网毕业时间改写
-#!desc = 改写命中接口的毕业时间字段，支持 JSON 响应、HTML 页面与纯文本三类内容
+#!desc = 面向截图认证：改写页面渲染后的毕业时间 支持年份偏移保格式 标签相邻单元格改写 前端异步渲染兜底
 #!author = xiaoxinkeji
 #!homepage = https://github.com/xiaoxinkeji/loon-chsi-patch
 #!system = iOS,iPadOS,macOS
@@ -10,21 +10,25 @@
 
 [Argument]
 enabled = switch,true,tag=启用改写
-urlPattern = input,"chsi",tag=URL 关键字,desc=命中哪些请求 填普通关键字或正则源文本 脚本内先按正则试 失败再按子串匹配 留空表示全部
-gradDate = input,"2028-06-30",tag=目标毕业时间,desc=写回的日期字符串 格式需与页面或报文一致
-extraKeys = input,"",tag=额外字段键名,desc=英文逗号分隔 留空则只用内置默认键表
-aggressive = switch,false,tag=激进模式,desc=把响应里所有形如 2024-06-30 的日期一并替换 可能误伤
-htmlMode = switch,true,tag=HTML 改写,desc=对 HTML 做内联 JSON 串值替换并注入 DOM 改写脚本
+urlPattern = input,"chsi",tag=URL 关键字,desc=命中哪些请求 普通关键字或正则源文本 留空表示全部
+gradDate = input,"",tag=目标毕业时间,desc=整串替换值 例 2028-06-30 留空则看年份偏移
+yearShift = input,4,type=number,tag=年份偏移,desc=只换年份保留格式 例 4 表示 2024-06-30 变 2028-06-30 优先于目标毕业时间
+pairs = input,"",tag=标签改写对,desc=格式 标签=值||标签=值 例 学籍状态=在读 改标签相邻的单元格
+extraKeys = input,"",tag=额外字段键名,desc=英文逗号分隔 追加到内置键表
+extraLabels = input,"",tag=额外标签词,desc=英文逗号分隔 判定哪些文本属于毕业相关
+aggressive = switch,false,tag=激进模式,desc=不限标签 改所有日期 会误伤
+htmlMode = switch,true,tag=HTML 改写,desc=内联 JSON 替换 + 注入 DOM 改写脚本 截图场景必须开
+observerSec = input,600,type=number,tag=观察时长秒,desc=注入脚本持续改写的秒数 建议覆盖到截图完成
 notify = switch,true,tag=改写后通知
 debug = switch,false,tag=调试日志
 
 [Script]
-response if ${url} ~= /^https?:\/\//i && ${response.status} == 200 && ${response.header['Content-Type']} ~= /json|html|text|javascript/i then script("https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/scripts/chsi_patch.js", {${urlPattern}, ${gradDate}, ${extraKeys}, ${aggressive}, ${htmlMode}, ${notify}, ${debug}}) with enable=${enabled}, tag="毕业时间改写", timeout=20, requires_body=true
-generic then script("https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/scripts/chsi_patch.js", {${urlPattern}, ${gradDate}, ${extraKeys}, ${aggressive}, ${htmlMode}, ${notify}, ${debug}}) with enable=${enabled}, tag="参数自检", img_url="gearshape", timeout=30
+response if ${url} ~= /^https?:\/\//i && ${response.status} == 200 && ${response.header['Content-Type']} ~= /json|html|text|javascript/i then script("https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/scripts/chsi_patch.js", {${urlPattern}, ${gradDate}, ${yearShift}, ${pairs}, ${extraKeys}, ${extraLabels}, ${aggressive}, ${htmlMode}, ${observerSec}, ${notify}, ${debug}}) with enable=${enabled}, tag="毕业时间改写", timeout=20, requires_body=true
+generic then script("https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/scripts/chsi_patch.js", {${urlPattern}, ${gradDate}, ${yearShift}, ${pairs}, ${extraKeys}, ${extraLabels}, ${aggressive}, ${htmlMode}, ${observerSec}, ${notify}, ${debug}}) with enable=${enabled}, tag="参数自检", img_url="gearshape", timeout=30
 
 [Mitm]
-hostname = chsi.com.cn, www.chsi.com.cn, my.chsi.com.cn, account.chsi.com.cn, passport.chsi.com.cn, xjxl.chsi.com.cn, alipay.com, mobilegw.alipay.com, *.alipay.com, *.chsi.com.cn
+hostname = chsi.com.cn, www.chsi.com.cn, my.chsi.com.cn, account.chsi.com.cn, passport.chsi.com.cn, xjxl.chsi.com.cn, xjxl2.chsi.com.cn, xjxl3.chsi.com.cn, www.chsi.cn, chsi.cn, *.chsi.com.cn, *.chsi.cn
 
 [Rule]
 DOMAIN-SUFFIX,chsi.com.cn,DIRECT
-DOMAIN-SUFFIX,alipay.com,DIRECT
+DOMAIN-SUFFIX,chsi.cn,DIRECT

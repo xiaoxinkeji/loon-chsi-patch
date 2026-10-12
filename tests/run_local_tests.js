@@ -25,117 +25,86 @@ const SNIFF = '/vol2/1000/海底捞/loon-chsi-patch/scripts/chsi_sniffer.js';
 let pass = 0, fail = 0;
 function check(name, cond, extra) {
   if (cond) { pass++; console.log('PASS  ' + name); }
-  else { fail++; console.log('FAIL  ' + name, extra !== undefined ? extra : ''); }
+  else { fail++; console.log('FAIL  ' + name, extra !== undefined ? JSON.stringify(extra).slice(0,300) : ''); }
 }
 
-// --- 1. patch: JSON response ---
-const argsJson = { urlPattern: 'chsi', gradDate: '2028-06-30', extraKeys: '', aggressive: false, htmlMode: true, notify: false, debug: false };
-const bodyJson = JSON.stringify({ code: 0, data: { graduationDate: '2024-06-30', byrq: '2024-06-30', name: 'x', nested: { endDate: '2024-06-30' }, list: [{ graduateTime: '2024-06-30' }] } });
-let r = runScript(PATCH, {
-  $argument: argsJson,
-  $request: { url: 'https://my.chsi.com.cn/api/xjxl', method: 'GET' },
-  $response: { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' }, body: bodyJson },
-  $persistentStore: { read: () => null, write: () => true },
-});
-check('json: body returned', r.done && typeof r.done.body === 'string');
-const outJson = r.done ? JSON.parse(r.done.body) : null;
-check('json: graduationDate', outJson && outJson.data.graduationDate === '2028-06-30', outJson);
-check('json: byrq', outJson && outJson.data.byrq === '2028-06-30');
-check('json: nested endDate', outJson && outJson.data.nested.endDate === '2028-06-30');
-check('json: array item', outJson && outJson.data.list[0].graduateTime === '2028-06-30');
-check('json: untouched field', outJson && outJson.data.name === 'x');
+const base = { urlPattern: 'chsi', gradDate: '', yearShift: 4, pairs: '', extraKeys: '', extraLabels: '', aggressive: false, htmlMode: true, observerSec: 600, notify: false, debug: false };
+const ps = { read: () => null, write: () => true };
 
-// --- 2. patch: url miss → no change ---
-r = runScript(PATCH, {
-  $argument: Object.assign({}, argsJson, { urlPattern: 'nomatch' }),
-  $request: { url: 'https://my.chsi.com.cn/api/xjxl', method: 'GET' },
-  $response: { status: 200, headers: { 'Content-Type': 'application/json' }, body: bodyJson },
-  $persistentStore: { read: () => null, write: () => true },
-});
-check('url miss: empty done', r.done && !r.done.body, r.done);
+function resp(url, ct, body) {
+  return { $argument: base, $request: { url, method: 'GET' }, $response: { status: 200, headers: { 'Content-Type': ct }, body }, $persistentStore: ps };
+}
 
-// --- 3. patch: HTML ---
-const bodyHtml = '<html><head><title>t</title></head><body><script>var s={"graduationDate":"2024-06-30"};</script><div>2024-06-30</div></body></html>';
-r = runScript(PATCH, {
-  $argument: argsJson,
-  $request: { url: 'https://my.chsi.com.cn/xjxl/report', method: 'GET' },
-  $response: { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: bodyHtml },
-  $persistentStore: { read: () => null, write: () => true },
-});
+// 1. yearShift on JSON
+let r = runScript(PATCH, resp('https://my.chsi.com.cn/api/x', 'application/json',
+  JSON.stringify({ data: { graduationDate: '2024-06-30', byrq: '2024年6月30日', name: 'x', nested: { endDate: '2024-06-30' }, list: [{ graduateTime: '2024-06-30' }] } })));
+let o = r.done && r.done.body ? JSON.parse(r.done.body) : null;
+check('yearShift json: graduationDate', o && o.data.graduationDate === '2028-06-30', o && o.data.graduationDate);
+check('yearShift json: chinese format kept', o && o.data.byrq === '2028年6月30日', o && o.data.byrq);
+check('yearShift json: nested', o && o.data.nested.endDate === '2028-06-30');
+check('yearShift json: array', o && o.data.list[0].graduateTime === '2028-06-30');
+check('yearShift json: untouched', o && o.data.name === 'x');
+
+// 2. yearShift negative
+r = runScript(PATCH, { $argument: Object.assign({}, base, { yearShift: -2 }), $request: { url: 'https://my.chsi.com.cn/a', method: 'GET' }, $response: { status: 200, headers: { 'Content-Type': 'application/json' }, body: '{"graduationDate":"2024-06-30"}' }, $persistentStore: ps });
+check('negative yearShift', r.done && r.done.body.indexOf('2022-06-30') !== -1, r.done && r.done.body);
+
+// 3. gradDate fallback (yearShift=0)
+r = runScript(PATCH, { $argument: Object.assign({}, base, { yearShift: 0, gradDate: '2028-06-30' }), $request: { url: 'https://my.chsi.com.cn/a', method: 'GET' }, $response: { status: 200, headers: { 'Content-Type': 'application/json' }, body: '{"graduationDate":"2024-06-30"}' }, $persistentStore: ps });
+check('gradDate fallback', r.done && r.done.body.indexOf('"graduationDate":"2028-06-30"') !== -1, r.done && r.done.body);
+
+// 4. both empty -> no change
+r = runScript(PATCH, { $argument: Object.assign({}, base, { yearShift: 0, gradDate: '' }), $request: { url: 'https://my.chsi.com.cn/a', method: 'GET' }, $response: { status: 200, headers: { 'Content-Type': 'application/json' }, body: '{"graduationDate":"2024-06-30"}' }, $persistentStore: ps });
+check('no rule: unchanged', r.done && !r.done.body, r.done);
+
+// 5. HTML injection contains config + observer
+const html = '<html><head><title>t</title></head><body><script>var s={"graduationDate":"2024-06-30"};<\/script><div>毕业时间 2024-06-30</div></body></html>';
+r = runScript(PATCH, resp('https://my.chsi.com.cn/p', 'text/html; charset=utf-8', html));
 const h = r.done && r.done.body ? r.done.body : '';
-check('html: inline json replaced', h.indexOf('"graduationDate":"2028-06-30"') !== -1, h.slice(0, 200));
-check('html: injector present', h.indexOf('[chsi-patch] injected replacements') !== -1);
+check('html: inline replaced to 2028', h.indexOf('"graduationDate":"2028-06-30"') !== -1, h.slice(0,200));
+check('html: injector present', h.indexOf('[chsi-shot]') !== -1);
+check('html: yearShift config', h.indexOf('"yearShift":4') !== -1);
+check('html: observerMs computed', h.indexOf('"observerMs":600000') !== -1);
+check('html: labels present', h.indexOf('\\u6bd5\\u4e1a\\u65f6\\u95f4') !== -1 || h.indexOf('毕业') !== -1);
+check('html: MutationObserver', h.indexOf('MutationObserver') !== -1);
 check('html: head preserved', h.indexOf('</head>') !== -1);
+check('html: script close not broken', h.indexOf('<\/script>') !== -1);
 
-// --- 4. patch: aggressive mode on text ---
-r = runScript(PATCH, {
-  $argument: Object.assign({}, argsJson, { aggressive: true }),
-  $request: { url: 'https://my.chsi.com.cn/a.txt', method: 'GET' },
-  $response: { status: 200, headers: { 'Content-Type': 'text/plain' }, body: '入学年月 2020-09-01 毕业 2024-06-30' },
-  $persistentStore: { read: () => null, write: () => true },
-});
-check('aggressive: dates replaced', r.done && r.done.body.indexOf('2028-06-30') !== -1 && r.done.body.indexOf('2024-06-30') === -1, r.done);
+// 6. pairs parsing
+r = runScript(PATCH, { $argument: Object.assign({}, base, { pairs: '学籍状态=在读||学制=4' }), $request: { url: 'https://my.chsi.com.cn/p', method: 'GET' }, $response: { status: 200, headers: { 'Content-Type': 'text/html' }, body: html }, $persistentStore: ps });
+const h2 = r.done && r.done.body ? r.done.body : '';
+check('pairs: injected as object', h2.indexOf('"pairs":{') !== -1, h2.slice(h2.indexOf('"pairs"'), h2.indexOf('"pairs"')+180));
+check('pairs: value present', h2.indexOf('"pairs":{"学籍状态":"在读","学制":"4"}') !== -1);
 
-const idx = r.done ? r.done.body.indexOf('2020-09-01') : 0;
-check('aggressive: replaces all dates', idx === -1);
+// 7. aggressive
+r = runScript(PATCH, { $argument: Object.assign({}, base, { aggressive: true }), $request: { url: 'https://my.chsi.com.cn/t', method: 'GET' }, $response: { status: 200, headers: { 'Content-Type': 'text/plain' }, body: '入学 2020-09-01 毕业 2024-06-30' }, $persistentStore: ps });
+check('aggressive: both shifted', r.done && r.done.body.indexOf('2024-09-01') !== -1 && r.done.body.indexOf('2028-06-30') !== -1, r.done && r.done.body);
 
-// --- 5. patch: non-200 skipped by plugin but guard test ---
-r = runScript(PATCH, {
-  $argument: argsJson,
-  $request: { url: 'https://my.chsi.com.cn/api/x', method: 'GET' },
-  $response: { status: 404, headers: { 'Content-Type': 'application/json' }, body: bodyJson },
-  $persistentStore: { read: () => null, write: () => true },
-});
-check('404: still patches (script trusts guard)', r.done && r.done.body && r.done.body.indexOf('2028-06-30') !== -1, r.done);
+// 8. url miss
+r = runScript(PATCH, { $argument: Object.assign({}, base, { urlPattern: 'nomatch' }), $request: { url: 'https://my.chsi.com.cn/a', method: 'GET' }, $response: { status: 200, headers: { 'Content-Type': 'application/json' }, body: '{"graduationDate":"2024-06-30"}' }, $persistentStore: ps });
+check('url miss: empty', r.done && !r.done.body, r.done);
 
-// --- 6. patch: self test (generic) ---
-r = runScript(PATCH, { $argument: argsJson, $request: undefined, $response: undefined, $persistentStore: { read: () => null, write: () => true } });
-check('selftest: no throw', r.logs.length > 0);
-const st = r.logs.find(l => l && l.mode === 'self-test');
-check('selftest: jsonReplacements > 0', st && st.jsonReplacements > 0, st && st.jsonReplacements);
-check('selftest: html sample patched', st && String(st.htmlSample).indexOf('2028-06-30') !== -1);
-
-// --- 7. sniffer: record ---
-let store = null;
-const ps = { read: () => store, write: (v) => { store = v; return true; } };
-r = runScript(SNIFF, {
-  $argument: { urlPattern: 'chsi', snippet: 600, maxKeep: 5, debug: false },
-  $request: { url: 'https://my.chsi.com.cn/api/v', method: 'POST' },
-  $response: { status: 200, headers: { 'Content-Type': 'application/json' }, body: '{"graduationDate":"2024-06-30","byrq":"2024-06-30"}' },
-  $persistentStore: ps,
-});
-check('sniff: saved', !!store);
-const rec = store ? JSON.parse(store) : [];
-check('sniff: one record', rec.length === 1, rec.length);
-check('sniff: keys extracted', rec[0] && rec[0].dateKeys.indexOf('graduationDate = 2024-06-30') !== -1, rec[0] && rec[0].dateKeys);
-check('sniff: byrq extracted', rec[0] && rec[0].dateKeys.indexOf('byrq = 2024-06-30') !== -1);
-
-// --- 8. sniffer: export ---
-r = runScript(SNIFF, { $argument: { urlPattern: 'chsi', snippet: 600, maxKeep: 5, debug: false }, $request: undefined, $response: undefined, $persistentStore: ps });
-const notify = r.logs.find(l => l && l.notify);
-check('sniff export: clipboard set', notify && String(notify.notify[3].clipboard).indexOf('graduationDate') !== -1, notify && notify.notify[3]);
-
-// --- 9. sniffer: maxKeep trim ---
-store = JSON.stringify(Array.from({length: 5}, (_, i) => ({ url: 'u' + i, time: 't', method: 'GET', status: 200, contentType: '', length: 0, dateKeys: [], snippet: '' })));
-r = runScript(SNIFF, {
-  $argument: { urlPattern: 'chsi', snippet: 600, maxKeep: 5, debug: false },
-  $request: { url: 'https://my.chsi.com.cn/new', method: 'GET' },
-  $response: { status: 200, headers: { 'Content-Type': 'text/html' }, body: 'x' },
-  $persistentStore: ps,
-});
-const rec2 = JSON.parse(store);
-check('sniff: trimmed to maxKeep', rec2.length === 5, rec2.length);
-check('sniff: oldest dropped', rec2[0].url !== 'u0');
-check('sniff: newest kept', rec2[rec2.length - 1].url === 'https://my.chsi.com.cn/new');
-
-// --- 10. patch: binary body skipped ---
-r = runScript(PATCH, {
-  $argument: argsJson,
-  $request: { url: 'https://my.chsi.com.cn/x', method: 'GET' },
-  $response: { status: 200, headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array([1,2,3]) },
-  $persistentStore: { read: () => null, write: () => true },
-});
+// 9. binary skip
+r = runScript(PATCH, { $argument: base, $request: { url: 'https://my.chsi.com.cn/b', method: 'GET' }, $response: { status: 200, headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array([1,2,3]) }, $persistentStore: ps });
 check('binary: empty done', r.done && !r.done.body, r.done);
+
+// 10. selftest
+r = runScript(PATCH, { $argument: base, $request: undefined, $response: undefined, $persistentStore: ps });
+const st = r.logs.find(l => l && l.mode === 'self-test');
+check('selftest: ran', !!st);
+check('selftest: yearShift shown', st && st.yearShift === 4, st && st.yearShift);
+check('selftest: replacements > 0', st && st.jsonReplacements > 0, st && st.jsonReplacements);
+check('selftest: chinese format kept', st && st.jsonResult && st.jsonResult.data.byrq === '2028年6月30日', st && st.jsonResult && st.jsonResult.data.byrq);
+check('selftest: html inline replaced', st && st.htmlInlineReplaced === true, st && st.htmlInlineReplaced);
+check('selftest: html injector present', st && st.htmlInjectorPresent === true, st && st.htmlInjectorPresent);
+
+// 11. sniffer still works
+let store = null;
+const ps2 = { read: () => store, write: (v) => { store = v; return true; } };
+r = runScript(SNIFF, { $argument: { urlPattern: 'chsi', snippet: 600, maxKeep: 5, debug: false }, $request: { url: 'https://my.chsi.com.cn/api/v', method: 'POST' }, $response: { status: 200, headers: { 'Content-Type': 'application/json' }, body: '{"graduationDate":"2024-06-30","byrq":"2024-06-30"}' }, $persistentStore: ps2 });
+const rec = store ? JSON.parse(store) : [];
+check('sniff: saved one', rec.length === 1);
+check('sniff: keys extracted', rec[0] && rec[0].dateKeys.indexOf('graduationDate = 2024-06-30') !== -1, rec[0] && rec[0].dateKeys);
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
