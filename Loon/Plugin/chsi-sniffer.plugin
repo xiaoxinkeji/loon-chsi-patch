@@ -1,0 +1,27 @@
+#!name = 学信网流量嗅探
+#!desc = 只记录不改写：抓下命中接口的 URL 方法 状态码 类型与响应片段 用来确认真实接口与字段名
+#!author = xiaoxinkeji
+#!homepage = https://github.com/xiaoxinkeji/loon-chsi-patch
+#!system = iOS,iPadOS,macOS
+#!loon_version = 3.5.1(983)
+#!date = 2026-10-12
+#!tag = 工具,调试
+#!type = normal
+
+[Argument]
+enabled = switch,true,tag=启用嗅探
+urlPattern = input,"chsi",tag=URL 关键字,desc=命中哪些请求 填普通关键字或正则源文本 留空表示全部
+snippet = input,600,type=number,tag=片段长度,desc=每条记录保留的响应正文字符数
+maxKeep = input,30,type=number,tag=保留条数,desc=最多保留多少条记录 超出丢弃最旧的
+debug = switch,false,tag=调试日志
+
+[Script]
+response if ${url} ~= /^https?:\/\//i then script("https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/scripts/chsi_sniffer.js", {${urlPattern}, ${snippet}, ${maxKeep}, ${debug}}) with enable=${enabled}, tag="流量嗅探", timeout=20, requires_body=true
+generic then script("https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/scripts/chsi_sniffer.js", {${urlPattern}, ${snippet}, ${maxKeep}, ${debug}}) with enable=${enabled}, tag="导出嗅探结果", img_url="square.and.arrow.up", timeout=30
+
+[Mitm]
+hostname = chsi.com.cn, www.chsi.com.cn, my.chsi.com.cn, account.chsi.com.cn, passport.chsi.com.cn, xjxl.chsi.com.cn, alipay.com, mobilegw.alipay.com, *.alipay.com, *.chsi.com.cn
+
+[Rule]
+DOMAIN-SUFFIX,chsi.com.cn,DIRECT
+DOMAIN-SUFFIX,alipay.com,DIRECT

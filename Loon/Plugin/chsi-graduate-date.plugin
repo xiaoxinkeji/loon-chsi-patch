@@ -1,0 +1,30 @@
+#!name = 学信网毕业时间改写
+#!desc = 改写命中接口的毕业时间字段，支持 JSON 响应、HTML 页面与纯文本三类内容
+#!author = xiaoxinkeji
+#!homepage = https://github.com/xiaoxinkeji/loon-chsi-patch
+#!system = iOS,iPadOS,macOS
+#!loon_version = 3.5.1(983)
+#!date = 2026-10-12
+#!tag = 工具,调试
+#!type = normal
+
+[Argument]
+enabled = switch,true,tag=启用改写
+urlPattern = input,"chsi",tag=URL 关键字,desc=命中哪些请求 填普通关键字或正则源文本 脚本内先按正则试 失败再按子串匹配 留空表示全部
+gradDate = input,"2028-06-30",tag=目标毕业时间,desc=写回的日期字符串 格式需与页面或报文一致
+extraKeys = input,"",tag=额外字段键名,desc=英文逗号分隔 留空则只用内置默认键表
+aggressive = switch,false,tag=激进模式,desc=把响应里所有形如 2024-06-30 的日期一并替换 可能误伤
+htmlMode = switch,true,tag=HTML 改写,desc=对 HTML 做内联 JSON 串值替换并注入 DOM 改写脚本
+notify = switch,true,tag=改写后通知
+debug = switch,false,tag=调试日志
+
+[Script]
+response if ${url} ~= /^https?:\/\//i && ${response.status} == 200 && ${response.header['Content-Type']} ~= /json|html|text|javascript/i then script("https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/scripts/chsi_patch.js", {${urlPattern}, ${gradDate}, ${extraKeys}, ${aggressive}, ${htmlMode}, ${notify}, ${debug}}) with enable=${enabled}, tag="毕业时间改写", timeout=20, requires_body=true
+generic then script("https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/scripts/chsi_patch.js", {${urlPattern}, ${gradDate}, ${extraKeys}, ${aggressive}, ${htmlMode}, ${notify}, ${debug}}) with enable=${enabled}, tag="参数自检", img_url="gearshape", timeout=30
+
+[Mitm]
+hostname = chsi.com.cn, www.chsi.com.cn, my.chsi.com.cn, account.chsi.com.cn, passport.chsi.com.cn, xjxl.chsi.com.cn, alipay.com, mobilegw.alipay.com, *.alipay.com, *.chsi.com.cn
+
+[Rule]
+DOMAIN-SUFFIX,chsi.com.cn,DIRECT
+DOMAIN-SUFFIX,alipay.com,DIRECT
