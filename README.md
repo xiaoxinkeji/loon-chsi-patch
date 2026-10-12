@@ -87,6 +87,16 @@ https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/Loon/Plugin/c
 https://raw.githubusercontent.com/xiaoxinkeji/loon-chsi-patch/main/Loon/Plugin/chsi-graduate-date.plugin, tag=学信网毕业时间改写, enabled=true
 ```
 
+## 本地测试
+
+仓库带了一个 mock 运行时，注入 Loon 的全局对象后直接跑脚本，不需要真机：
+
+```bash
+node tests/run_local_tests.js
+```
+
+覆盖 JSON 递归改写、HTML 内联替换与注入、激进模式日期替换、URL 未命中跳过、二进制 Body 跳过、嗅探记录与裁剪、导出剪贴板，共 25 项。
+
 ## 要求
 
 Loon **3.5.1 (983)+**（插件参数、`script(...)` 新语法均需此版本）。
