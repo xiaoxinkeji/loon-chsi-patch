@@ -1,0 +1,5 @@
+# 证书与私钥不进仓库
+certkit/out/
+gateway/mitm.log
+gateway/sslkeys.log
+.mitm-venv/
