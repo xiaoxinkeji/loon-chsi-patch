@@ -68,6 +68,7 @@ LAN_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="sr
 if [[ "${1:-}" == "bg" ]]; then
   setsid nohup "$VENV/bin/mitmdump" \
     --listen-host 0.0.0.0 -p "$PORT" --set block_global=false \
+    --allow-hosts 'chsi\.com\.cn' --allow-hosts 'chsi\.cn' \
     ${SSL_INSECURE:-} -s "$ADDON" >> "$ROOT/gateway/mitm.log" 2>&1 < /dev/null &
   echo $! > "$PIDFILE"
   sleep 6
@@ -99,5 +100,6 @@ if [[ "${1:-}" != "bg" ]]; then
   echo "（前台运行，Ctrl+C 停止）"
   exec "$VENV/bin/mitmdump" \
     --listen-host 0.0.0.0 -p "$PORT" --set block_global=false \
+    --allow-hosts 'chsi\.com\.cn' --allow-hosts 'chsi\.cn' \
     ${SSL_INSECURE:-} -s "$ADDON" 2>&1 | tee -a "$ROOT/gateway/mitm.log"
 fi
