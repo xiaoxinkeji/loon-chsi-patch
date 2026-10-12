@@ -29,16 +29,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 VENV="$ROOT/.mitm-venv"
 ADDON="$ROOT/gateway/chsi_rewrite.py"
-PORT="${MITM_PORT:-8080}"
-
-# 本机 8080 常被 docker-proxy 占用，写死会启动失败 —— 自动挑空闲端口
-port_free() { ! ss -tln 2>/dev/null | grep -qE ":$1[[:space:]]"; }
-if [[ -z "${MITM_PORT:-}" ]] && ! port_free "$PORT"; then
-  for p in 8080 8081 8888 8899 9090 18080 18081; do
-    if port_free "$p"; then PORT="$p"; break; fi
-  done
-fi
-port_free "$PORT" || { echo "端口 $PORT 被占用，用 MITM_PORT=<port> 指定" >&2; exit 1; }
+# 本机 8080 常被 docker-proxy 占用 —— 与 make_profile.sh 共用同一套探测
+source "$HERE/portlib.sh"
+PORT="$(pick_port "${MITM_PORT:-}")" || exit 1
 
 if [[ "${1:-}" == "stop" ]]; then
   exec "$ROOT/gateway/stop.sh"
