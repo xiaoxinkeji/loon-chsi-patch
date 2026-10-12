@@ -8,6 +8,8 @@ Loon 插件集合，用于**定位并改写**学信网链路里出现的毕业�
 
 两个插件配套使用：先嗅探确认真实接口与字段名，再开改写。
 
+若手机端 MitM 触发 App 的 VPN 检测，改用 `gateway/` 下的网关机方案 —— 手机上不留任何 VPN 配置。
+
 ```
 Loon/Plugin/
 ├── chsi-sniffer.plugin          只记录不改写
@@ -15,10 +17,13 @@ Loon/Plugin/
 scripts/
 ├── chsi_sniffer.js
 └── chsi_patch.js
+gateway/
+└── chsi_rewrite.py              网关机 mitmproxy addon（手机上零 VPN 配置）
 frida/
 └── vpn_detect_bypass.js         越狱设备绕过 VPN/代理环境检测
 tests/
-└── run_local_tests.js
+├── run_local_tests.js           Loon 插件测试（29 项）
+└── run_gateway_tests.py         网关 addon 测试（22 项）
 ```
 
 ## 前置：MitM 证书
@@ -33,41 +38,99 @@ tests/
 
 ## 前置：App 提示「请关闭 VPN」
 
-MitM 必须接管流量，iOS 上接管流量只能靠 VPN（NEPacketTunnelProvider），所以这个提示躲不开，只能绕过检测。
+### 先定位是谁在报
 
-常见检测面与对策：
-
-| 检测面 | 表现 | 对策 |
+| 报的地方 | 说明 | 能否靠本机配置解决 |
 |---|---|---|
-| `getifaddrs` 枚举到 `utun` | 最常见 | Loon 切 HTTP Proxy 模式；或 Frida 摘掉节点 |
-| `sysctl` 读路由表 | 配合上一条 | Frida 屏蔽 `NET_RT_*` 查询 |
-| `CFNetworkCopySystemProxySettings` | 暴露 WiFi 手动代理 | 别在系统 WiFi 里配代理 |
-| `NEVPNManager` / `NEVPNConnection.status` | 读连接状态 | Frida 改返回值 |
-| 出口 IP 归属变化 | 服务端侧判定 | 目标域名必须 `DIRECT`，见下 |
+| 支付宝 App 原生提示 | App 调 `getifaddrs` 枚举 `utun` | 本机无解，见下 |
+| 学信网网页提示 | 网页读不到 iOS VPN 状态，只能靠服务端 IP 归属 / WebRTC 判定 | 可以，见下 |
+| 登录接口返回错误码 | 服务端按出口 IP 判定 | 可以，出口走真宽带即可 |
 
-按顺序试：
+### 本机 MitM 为什么躲不掉
 
-**① 先切代理模式。** Loon 支持 `tun` / `http` / `mix`，纯 HTTP Proxy 模式不创建 `utun` 接口，能避开最常见的接口枚举检测：
+iOS 上接管本机流量只能走 `NEPacketTunnelProvider`，也就是 NetworkExtension。不管 Loon 切 `tun` / `http` / `mix`，VPN 配置在、状态栏图标在、`utun` 接口在，`getifaddrs` 一枚举就中。
 
-```
-loon://proxymode=http      切到纯 HTTP Proxy
-loon://proxymode=mix       HTTP Proxy + TUN
-loon://proxymode=tun       TUN Only
-```
+**这是系统层面的硬约束，本机上绕不过。** 能做的只有两个方向：
 
-**② 别在系统 WiFi 里填代理。** 设置 → 无线局域网 → 配置代理，这个是最容易被读到的痕迹。Loon 自己接管即可。
+**方向一：把 MitM 挪出手机（推荐，彻底解决）**
 
-**③ 确认出口 IP 没变。** 插件已声明 `DOMAIN-SUFFIX,chsi.com.cn,DIRECT` 与 `DOMAIN-SUFFIX,alipay.com,DIRECT`。若这些域名走了代理节点，服务端会看到异地 IP，那是另一层风控。
+见下节「网关机方案」——手机上不留任何 VPN 配置。
 
-**④ 上 Frida。** 越狱设备注入 `frida/vpn_detect_bypass.js`：
+**方向二：越狱 + Frida 骗过检测**
 
 ```bash
 frida -U -f <BUNDLE_ID> -l frida/vpn_detect_bypass.js --no-pause
 ```
 
-脚本 hook 了 `getifaddrs`（摘掉 `utun/tun/ppp/ipsec` 节点）、`sysctl`（屏蔽路由表查询）、`CFNetworkCopySystemProxySettings` 与 `SCDynamicStoreCopyProxySettings`（抹掉代理键）、`NEVPNConnection.status`（伪装 Disconnected）、以及 `/proc/net/*` 读取。
+脚本 hook 了 `getifaddrs`（摘掉 `utun/tun/ppp/ipsec` 节点）、`sysctl`（屏蔽 `NET_RT_*` 路由表查询）、`CFNetworkCopySystemProxySettings` 与 `SCDynamicStoreCopyProxySettings`（抹掉代理键）、`NEVPNConnection.status`（伪装 Disconnected）、`/proc/net/*` 读取重定向。
 
-**⑤ 换工具层。** 若目标是学信网 WebView 而非支付宝原生报文，可以不 MitM 支付宝：`$httpClient` 走 Loon 直连学信网取数据，或在 WebView 侧注入。这样支付宝全程不经过解密。
+局限：只骗客户端本地检测，骗不了服务端 IP 归属判定；且需要越狱。
+
+### 如果提示来自网页而非 App
+
+网页拿不到 iOS 的 VPN 状态，它只能靠这两条：
+
+- **出口 IP 归属** —— 插件已声明 `chsi.com.cn` / `chsi.cn` 走 `DIRECT`。确认这两个域名没走代理节点，出口就是你家宽带 IP。
+- **WebRTC 泄漏** —— 浏览器侧可通过 STUN 拿到真实 IP，与 HTTP 出口不一致即判定异常。Safari 可在「设置 → Safari → 高级 → Feature Flags」关掉 WebRTC 相关开关；国产 App 内置 WebView 一般不开 WebRTC。
+
+Loon 侧可关掉 STUN 处理（`[General]` 加 `disable-stun = true`），减少一层泄漏面。
+
+## 网关机方案（推荐，手机上零 VPN 配置）
+
+把 MitM 从手机挪到局域网里另一台机器，手机只做一件事：把网关指向它。手机上没有 VPN、没有代理描述文件、没有 `utun` —— 本地检测无从命中。
+
+```
+手机 (网关指向 GATEWAY_IP)
+   ↓
+网关机 (mitmproxy transparent + chsi_rewrite.py)
+   ↓ 改写后转发
+学信网
+```
+
+### 网关机
+
+```bash
+pip install mitmproxy
+
+# 开启 IP 转发
+sysctl -w net.ipv4.ip_forward=1
+
+# 把 80/443 重定向到 mitmproxy（假设网关机 LAN 口 eth0）
+iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 80  -j REDIRECT --to-port 8080
+iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 443 -j REDIRECT --to-port 8080
+
+# 启动（transparent 模式）
+CHSI_YEAR_SHIFT=4 mitmdump -m transparent --listen-host 0.0.0.0 -p 8080 \
+  -s gateway/chsi_rewrite.py
+```
+
+addon 只处理 chsi 域名（`HOST_RE` 严格匹配 `chsi.com.cn` / `chsi.cn` 及其子域，排除 `chsi.com.cn.evil.com` 这类伪装），其余流量原样放行。
+
+### 手机
+
+设置 → 无线局域网 → 当前 WiFi → 配置 IP 选「手动」，把**路由器**填成网关机 IP。系统代理栏留空。
+
+### 证书
+
+手机仍需信任网关机的 mitmproxy CA，否则 HTTPS 解密失败。安装 `~/.mitmproxy/mitmproxy-ca-cert.pem` 后，**设置 → 通用 → 关于本机 → 证书信任设置 → 完全信任**。
+
+这一步不产生 VPN 配置 —— 装的是根证书，不是 VPN 描述文件。
+
+### addon 配置（环境变量）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `CHSI_YEAR_SHIFT` | `4` | 年份偏移，优先于整串替换 |
+| `CHSI_TARGET_DATE` | 空 | 整串替换值 |
+| `CHSI_PAIRS` | 空 | 标签改写对，`标签=值\|\|标签=值` |
+| `CHSI_EXTRA_KEYS` | 空 | 额外键名，逗号分隔 |
+| `CHSI_EXTRA_LABELS` | 空 | 额外标签词，逗号分隔 |
+| `CHSI_AGGRESSIVE` | `0` | `1` 开启不限标签全替换 |
+| `CHSI_HTML_MODE` | `1` | `0` 关闭 HTML 注入 |
+| `CHSI_OBSERVER_SEC` | `600` | 注入脚本持续秒数 |
+| `CHSI_DEBUG` | `0` | `1` 打印每次命中 |
+
+逻辑与 Loon 插件完全一致（年份偏移保格式、pairs 标签改写、MutationObserver 兜底），改一端记得同步另一端。
 
 ## 插件一：学信网流量嗅探
 
@@ -180,6 +243,14 @@ node tests/run_local_tests.js
 覆盖年份偏移（含中文格式保留与负偏移）、gradDate 回退、JSON 递归改写、HTML 内联替换与注入配置、标签改写对解析、激进模式、URL 未命中跳过、二进制 Body 跳过、参数自检、嗅探记录与键名提取，共 29 项。
 
 改脚本后重跑一遍再推仓库。
+
+网关 addon：
+
+```bash
+python3 tests/run_gateway_tests.py
+```
+
+本机没装 mitmproxy 时会注入最小 stub，只测纯逻辑（改写、host 匹配、注入构造），不测 mitmproxy 运行时。其中一条是回归用例：`re.sub` 的替换内容若直接传字符串，注入脚本里的 `\d` 会被当成反向引用，抛 `re.error: bad escape` —— 必须用 lambda 传。
 
 ## 要求
 
