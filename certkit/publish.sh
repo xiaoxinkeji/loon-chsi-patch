@@ -54,27 +54,22 @@ fi
 echo "[+] 目标目录: $DEST"
 
 # ---- 复制 ----
+# 直接放 root_folder_path 根下：/ios 挂载点暴露的就是这个目录本身，
+# 放进子目录会让 URL 多一层
 cp "$CERTDIR/chsi-ca.mobileconfig" "$DEST/"
 cp "$CERTDIR/ca.crt" "$DEST/chsi-ca.crt"
 chmod 644 "$DEST/chsi-ca.mobileconfig" "$DEST/chsi-ca.crt"
 echo "[+] 已发布: chsi-ca.mobileconfig, chsi-ca.crt"
 
 # ---- 直链 ----
-PORT="$(ss -tlnp 2>/dev/null | grep -oE ':5244\s' >/dev/null && echo 5244 || echo 5244)"
+PORT="${OPENLIST_PORT:-5244}"
 LAN_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')"
-
-# AList 挂载点 /ios 对应的子路径 = 目标目录相对 root_folder_path 的部分
-SUB="$(basename "$DEST")"
-BASE="http://${LAN_IP:-<本机IP>}:${PORT}/d/ios/${SUB}"
+BASE="http://${LAN_IP:-<本机IP>}:${PORT}/d/ios"
 
 echo
 echo "================ 手机端直链 ================"
-python3 - "$BASE" <<'PY'
-import sys, urllib.parse
-b = sys.argv[1]
-for name in ("chsi-ca.mobileconfig", "chsi-ca.crt"):
-    print(urllib.parse.quote(b, safe=":/") + "/" + name)
-PY
+echo "${BASE}/chsi-ca.mobileconfig"
+echo "${BASE}/chsi-ca.crt"
 echo "============================================"
 echo
 echo "手机 Safari 打开上面的 mobileconfig 链接 → 安装 → 锁屏密码"
