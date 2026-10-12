@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
-# 一键透明网关：自签 CA + mitmproxy + iptables 重定向
+# CHSI 改写代理 —— 普通手机「连 WiFi 装证书」形态
 #
 #   ./certkit/serve.sh         启动
 #   ./certkit/serve.sh stop    停止并回滚
 #
-# 手机端只需三步，装完不留 VPN 配置、不出现 VPN 图标、无 utun 接口:
-#   1. AirDrop/邮件打开 certkit/out/chsi-ca.mobileconfig → 安装 → 锁屏密码
-#   2. 设置 > 通用 > 关于本机 > 证书信任设置 > 打开「完全信任」
-#   3. WiFi > 配置 IP 手动 > 路由器填本机 IP（系统代理栏留空）
+# 原理：电脑跑 HTTP 代理，手机 WiFi 里填代理地址。
+# HTTPS 走 CONNECT，mitmproxy 解密后用自签证书重签 —— 所以手机必须信任它的 CA，
+# 这就是「连 WiFi 下载证书」这一步（访问 http://mitm.it）。
 #
-# 环境:
-#   LAN_IFACE     接手机的网卡（默认自动探测）
-#   MITM_PORT     mitmproxy 端口（默认 8080）
-#   CHSI_YEAR_SHIFT / CHSI_PAIRS / ...  见 README
+# 与「透明网关」的区别（关键）：
+#   透明网关：手机改「路由器」= 网关，需 iptables REDIRECT + IP 转发，手机无代理
+#   本脚本  ：手机填「代理」，普通 HTTP 代理，不产生 utun、不产生 VPN 图标
+#             → 支付宝检测 VPN 的那一套（getifaddrs 枚举 utun）不会命中
+#
+# 手机端三步：
+#   1. WiFi > 配置代理 > 手动 > 服务器 填本机 IP，端口填 8080
+#   2. Safari 访问 http://mitm.it  → 选 Apple → 下载安装描述文件
+#   3. 设置 > 通用 > 关于本机 > 证书信任设置 → 对 mitmproxy 打开「完全信任」
+#
+# 环境：
+#   MITM_PORT         代理端口（默认 8080）
+#   CHSI_YEAR_SHIFT   毕业年份偏移（默认 4）
+#   CHSI_PAIRS 等     见 README
 
 set -euo pipefail
 
@@ -20,8 +29,16 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 VENV="$ROOT/.mitm-venv"
 ADDON="$ROOT/gateway/chsi_rewrite.py"
-CERTDIR="$HERE/out"
 PORT="${MITM_PORT:-8080}"
+
+# 本机 8080 常被 docker-proxy 占用，写死会启动失败 —— 自动挑空闲端口
+port_free() { ! ss -tln 2>/dev/null | grep -qE ":$1[[:space:]]"; }
+if [[ -z "${MITM_PORT:-}" ]] && ! port_free "$PORT"; then
+  for p in 8080 8081 8888 8899 9090 18080 18081; do
+    if port_free "$p"; then PORT="$p"; break; fi
+  done
+fi
+port_free "$PORT" || { echo "端口 $PORT 被占用，用 MITM_PORT=<port> 指定" >&2; exit 1; }
 
 if [[ "${1:-}" == "stop" ]]; then
   exec "$ROOT/gateway/stop.sh"
@@ -30,35 +47,26 @@ fi
 # ---- 前置检查 ----
 [[ -x "$VENV/bin/mitmdump" ]] || { echo "缺 mitmproxy: python3 -m venv $VENV && $VENV/bin/pip install mitmproxy" >&2; exit 1; }
 [[ -f "$ADDON" ]] || { echo "缺 addon: $ADDON" >&2; exit 1; }
+command -v openssl >/dev/null || { echo "缺 openssl" >&2; exit 1; }
 
-# ---- 首次运行自动生成证书 ----
-if [[ ! -f "$CERTDIR/ca.crt" || ! -f "$CERTDIR/chsi-ca.mobileconfig" ]]; then
-  echo "[*] 首次运行，生成 CA 与 iOS 描述文件..."
-  "$HERE/make_certs.sh" >/dev/null
+# ---- 确认 mitmproxy 自己的 CA 存在 ----
+# mitm.it 用它签发，手机装的就是它，不是我们另生成的 ca.crt
+CA_DIR="${MITMPROXY_CA_DIR:-$HOME/.mitmproxy}"
+if [[ ! -f "$CA_DIR/mitmproxy-ca-cert.pem" ]]; then
+  echo "[*] 首次运行，生成 mitmproxy CA..."
+  MITMPROXY_CA_DIR="$CA_DIR" "$VENV/bin/mitmdump" --listen-host 127.0.0.1 -p 1 -q \
+    -s /dev/null --set block_global=false &
+  GEN_PID=$!
+  sleep 3
+  kill "$GEN_PID" 2>/dev/null || true
+  wait "$GEN_PID" 2>/dev/null || true
 fi
-echo "[+] CA:          $CERTDIR/ca.crt"
-echo "[+] iOS 描述文件: $CERTDIR/chsi-ca.mobileconfig"
+[[ -f "$CA_DIR/mitmproxy-ca-cert.pem" ]] || { echo "CA 生成失败: $CA_DIR" >&2; exit 1; }
+echo "[+] CA: $CA_DIR/mitmproxy-ca-cert.pem"
 
-# ---- 探测网卡 ----
-LAN_IFACE="${LAN_IFACE:-}"
-if [[ -z "$LAN_IFACE" ]]; then
-  LAN_IFACE="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}')"
-fi
-[[ -n "$LAN_IFACE" ]] || { echo "探测不到网卡，请设 LAN_IFACE" >&2; exit 1; }
-LAN_IP="$(ip -4 addr show dev "$LAN_IFACE" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')"
-echo "[+] 网卡: $LAN_IFACE  本机 IP: ${LAN_IP:-未知}"
-
-# ---- IP 转发 ----
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-echo "[+] IP 转发已开"
-
-# ---- iptables ----
-for dport in 80 443; do
-  iptables -t nat -C PREROUTING -i "$LAN_IFACE" -p tcp --dport "$dport" -j REDIRECT --to-port "$PORT" 2>/dev/null \
-    || iptables -t nat -A PREROUTING -i "$LAN_IFACE" -p tcp --dport "$dport" -j REDIRECT --to-port "$PORT"
-done
-iptables -C FORWARD -i "$LAN_IFACE" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$LAN_IFACE" -j ACCEPT
-echo "[+] iptables 已重定向 80/443 -> $PORT"
+# ---- 本机 IP ----
+LAN_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')"
+echo "[+] 代理地址: ${LAN_IP:-<本机IP>}:${PORT}"
 
 export CHSI_YEAR_SHIFT="${CHSI_YEAR_SHIFT:-4}"
 export CHSI_DEBUG="${CHSI_DEBUG:-1}"
@@ -66,25 +74,30 @@ export SSLKEYLOGFILE="${SSLKEYLOGFILE:-$ROOT/gateway/sslkeys.log}"
 
 cat <<EOF
 
-================ 手机端设置 ================
-1. 把 $CERTDIR/chsi-ca.mobileconfig 传到手机并打开
-   → 安装 → 输入锁屏密码
-2. 设置 > 通用 > 关于本机 > 证书信任设置
-   → 对 CHSI-Patch CA 打开「完全信任」
-3. 设置 > 无线局域网 > 当前 WiFi
-   → 配置 IP: 手动
-   → 路由器:  ${LAN_IP:-<本机IP>}
-   → 系统代理栏保持关闭/留空
-============================================
+================= 手机端三步 =================
+1. 设置 > 无线局域网 > 当前 WiFi
+   → 配置代理: 手动
+   → 服务器:   ${LAN_IP:-<本机IP>}
+   → 端口:     ${PORT}
+   （「路由器」那栏不要动，这是代理不是网关）
+
+2. Safari 打开  http://mitm.it
+   → 点 Apple → 允许 → 安装 → 锁屏密码
+
+3. 设置 > 通用 > 关于本机 > 证书信任设置
+   → 对 mitmproxy 打开「完全信任」
+==============================================
+
+改完毕业时间后记得把代理关回「关闭」，否则手机一直走本机。
 
 停止: $HERE/serve.sh stop
 日志: $ROOT/gateway/mitm.log
-
 EOF
 
+# 普通 HTTP 代理模式（不是 -m transparent）
+# 注：本地自签后端做测试时需加 --set ssl_insecure=true；
+#     线上学信网有真实证书，不需要。
 exec "$VENV/bin/mitmdump" \
-  -m transparent \
   --listen-host 0.0.0.0 -p "$PORT" \
   --set block_global=false \
-  --certs "chsi.com.cn=$CERTDIR/server.pem" \
   -s "$ADDON" 2>&1 | tee -a "$ROOT/gateway/mitm.log"
