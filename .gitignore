@@ -3,3 +3,4 @@ certkit/out/
 gateway/mitm.log
 gateway/sslkeys.log
 .mitm-venv/
+__pycache__/
