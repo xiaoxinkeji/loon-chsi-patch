@@ -56,10 +56,19 @@ echo "[+] 目标目录: $DEST"
 # ---- 复制 ----
 # 直接放 root_folder_path 根下：/ios 挂载点暴露的就是这个目录本身，
 # 放进子目录会让 URL 多一层
-cp "$CERTDIR/chsi-ca.mobileconfig" "$DEST/"
-cp "$CERTDIR/ca.crt" "$DEST/chsi-ca.crt"
-chmod 644 "$DEST/chsi-ca.mobileconfig" "$DEST/chsi-ca.crt"
-echo "[+] 已发布: chsi-ca.mobileconfig, chsi-ca.crt"
+if [[ -n "${PROFILE_ONLY:-}" ]]; then
+  # up.sh 用的双 payload 版（证书 + 代理），手机上就装这一个
+  [[ -f "$CERTDIR/chsi-profile.mobileconfig" ]] || { echo "缺 chsi-profile.mobileconfig" >&2; exit 1; }
+  cp "$CERTDIR/chsi-profile.mobileconfig" "$DEST/"
+  chmod 644 "$DEST/chsi-profile.mobileconfig"
+  FILES=("chsi-profile.mobileconfig")
+else
+  cp "$CERTDIR/chsi-ca.mobileconfig" "$DEST/"
+  cp "$CERTDIR/ca.crt" "$DEST/chsi-ca.crt"
+  chmod 644 "$DEST/chsi-ca.mobileconfig" "$DEST/chsi-ca.crt"
+  FILES=("chsi-ca.mobileconfig" "chsi-ca.crt")
+fi
+echo "[+] 已发布: ${FILES[*]}"
 
 # ---- 直链 ----
 PORT="${OPENLIST_PORT:-5244}"
@@ -68,8 +77,7 @@ BASE="http://${LAN_IP:-<本机IP>}:${PORT}/d/ios"
 
 echo
 echo "================ 手机端直链 ================"
-echo "${BASE}/chsi-ca.mobileconfig"
-echo "${BASE}/chsi-ca.crt"
+for f in "${FILES[@]}"; do echo "${BASE}/${f}"; done
 echo "============================================"
 echo
 echo "手机 Safari 打开上面的 mobileconfig 链接 → 安装 → 锁屏密码"

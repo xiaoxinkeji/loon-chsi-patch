@@ -27,7 +27,14 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
-VENV="$ROOT/.mitm-venv"
+# venv 在仓库的上一级（/vol2/1000/海底捞/.mitm-venv），不在仓库内
+VENV="${MITM_VENV:-}"
+if [[ -z "$VENV" ]]; then
+  for c in "$ROOT/../.mitm-venv" "$ROOT/.mitm-venv" "$HOME/.mitm-venv"; do
+    if [[ -x "$c/bin/mitmdump" ]]; then VENV="$(cd "$c" && pwd)"; break; fi
+  done
+fi
+[[ -n "${VENV:-}" ]] || VENV="$ROOT/../.mitm-venv"
 ADDON="$ROOT/gateway/chsi_rewrite.py"
 # 本机 8080 常被 docker-proxy 占用 —— 与 make_profile.sh 共用同一套探测
 source "$HERE/portlib.sh"
