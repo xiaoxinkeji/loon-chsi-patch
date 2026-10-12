@@ -11,6 +11,10 @@ Loon/Plugin/
 scripts/
 ├── chsi_sniffer.js
 └── chsi_patch.js
+frida/
+└── vpn_detect_bypass.js         越狱设备绕过 VPN/代理环境检测
+tests/
+└── run_local_tests.js
 ```
 
 ## 前置：MitM 证书
@@ -22,6 +26,44 @@ scripts/
 3. Loon → MitM → 开启「HTTP 解密」，主机名列表要包含插件声明的 hostname
 
 只装描述文件不开「完全信任」，所有 HTTPS 直接 `-1202`。
+
+## 前置：App 提示「请关闭 VPN」
+
+MitM 必须接管流量，iOS 上接管流量只能靠 VPN（NEPacketTunnelProvider），所以这个提示躲不开，只能绕过检测。
+
+常见检测面与对策：
+
+| 检测面 | 表现 | 对策 |
+|---|---|---|
+| `getifaddrs` 枚举到 `utun` | 最常见 | Loon 切 HTTP Proxy 模式；或 Frida 摘掉节点 |
+| `sysctl` 读路由表 | 配合上一条 | Frida 屏蔽 `NET_RT_*` 查询 |
+| `CFNetworkCopySystemProxySettings` | 暴露 WiFi 手动代理 | 别在系统 WiFi 里配代理 |
+| `NEVPNManager` / `NEVPNConnection.status` | 读连接状态 | Frida 改返回值 |
+| 出口 IP 归属变化 | 服务端侧判定 | 目标域名必须 `DIRECT`，见下 |
+
+按顺序试：
+
+**① 先切代理模式。** Loon 支持 `tun` / `http` / `mix`，纯 HTTP Proxy 模式不创建 `utun` 接口，能避开最常见的接口枚举检测：
+
+```
+loon://proxymode=http      切到纯 HTTP Proxy
+loon://proxymode=mix       HTTP Proxy + TUN
+loon://proxymode=tun       TUN Only
+```
+
+**② 别在系统 WiFi 里填代理。** 设置 → 无线局域网 → 配置代理，这个是最容易被读到的痕迹。Loon 自己接管即可。
+
+**③ 确认出口 IP 没变。** 插件已声明 `DOMAIN-SUFFIX,chsi.com.cn,DIRECT` 与 `DOMAIN-SUFFIX,alipay.com,DIRECT`。若这些域名走了代理节点，服务端会看到异地 IP，那是另一层风控。
+
+**④ 上 Frida。** 越狱设备注入 `frida/vpn_detect_bypass.js`：
+
+```bash
+frida -U -f <BUNDLE_ID> -l frida/vpn_detect_bypass.js --no-pause
+```
+
+脚本 hook 了 `getifaddrs`（摘掉 `utun/tun/ppp/ipsec` 节点）、`sysctl`（屏蔽路由表查询）、`CFNetworkCopySystemProxySettings` 与 `SCDynamicStoreCopyProxySettings`（抹掉代理键）、`NEVPNConnection.status`（伪装 Disconnected）、以及 `/proc/net/*` 读取。
+
+**⑤ 换工具层。** 若目标是学信网 WebView 而非支付宝原生报文，可以不 MitM 支付宝：`$httpClient` 走 Loon 直连学信网取数据，或在 WebView 侧注入。这样支付宝全程不经过解密。
 
 ## 插件一：学信网流量嗅探
 
